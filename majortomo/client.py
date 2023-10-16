@@ -82,8 +82,8 @@ class Client(object):
 
         Each additional argument will be sent as a request body frame.
         """
-        if self._expect_reply:
-            raise e.StateError("Still expecting reply from broker, cannot send new request")
+        # if self._expect_reply:
+        #     raise e.StateError("Still expecting reply from broker, cannot send new request")
 
         service = text_to_ascii_bytes(service)
         self._log.debug("Sending REQUEST message to %s with %d frames in body", service, len(args))
@@ -135,7 +135,9 @@ class Client(object):
         # type: (Optional[float]) -> List[bytes]
         """Return all reply parts as a single, flat list of frames
         """
-        return [frame for part in self.recv_all(timeout) for frame in part]
+        a = [frame for part in self.recv_all(timeout) for frame in part]
+        self._expect_reply = True
+        return a
 
     @staticmethod
     def _parse_message(message):
@@ -150,7 +152,6 @@ class Client(object):
             raise e.ProtocolError("Expecting first message frame to be empty")
 
         if message[0] != p.CLIENT_HEADER:
-            print(message)
             raise e.ProtocolError("Unexpected protocol header [{}], expecting [{}]".format(
                 message[0].decode('utf8'), p.WORKER_HEADER.decode('utf8')))
 

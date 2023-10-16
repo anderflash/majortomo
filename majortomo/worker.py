@@ -34,8 +34,8 @@ class Worker(object):
     """
 
     def __init__(self, broker_url, service_name, heartbeat_interval=p.DEFAULT_HEARTBEAT_INTERVAL,
-                 heartbeat_timeout=p.DEFAULT_HEARTBEAT_TIMEOUT, zmq_context=None, zmq_linger=DEFAULT_ZMQ_LINGER):
-        # type: (str, TextOrBytes, float, float, Optional[zmq.Context], int) -> None
+                 heartbeat_timeout=p.DEFAULT_HEARTBEAT_TIMEOUT, zmq_context=None, zmq_linger=DEFAULT_ZMQ_LINGER, identity=None):
+        # type: (str, TextOrBytes, float, float, Optional[zmq.Context], int, TextOrBytes) -> None
         self.broker_url = broker_url
         self.service_name = text_to_ascii_bytes(service_name)
         self.heartbeat_interval = heartbeat_interval
@@ -48,6 +48,7 @@ class Worker(object):
         self._heartbeat_timeout = heartbeat_timeout
         self._last_broker_hb = 0.0
         self._last_sent_message = 0.0
+        self.identity = identity
 
     def connect(self, reconnect=False):
         # type: (bool) -> None
@@ -59,6 +60,9 @@ class Worker(object):
         # Set up socket
         self._socket = self._zmq_context.socket(zmq.DEALER)
         self._socket.setsockopt(zmq.LINGER, self._linger)
+        if self.identity is not None:
+            identity = self.identity.encode("ascii") if isinstance(self.identity, str) else self.identity
+            self._socket.setsockopt(zmq.IDENTITY, identity)
         self._socket.connect(self.broker_url)
         self._log.debug("Connected to broker on ZMQ DEALER socket at %s", self.broker_url)
 
@@ -92,17 +96,17 @@ class Worker(object):
         request = frames[2:]
         return client_addr, request
 
-    def send_reply_final(self, client, frames):
-        # type: (bytes, List[bytes]) -> None
+    def send_reply_final(self, client, frames, copy=True, track=False):
+        # type: (bytes, List[bytes], bool, bool) -> None
         """Send final reply to client
 
         FINAL reply means the client will not expect any additional parts to the reply. This should be used
         when the entire reply is ready to be delivered.
         """
-        self._send_to_client(client, p.FINAL, *frames)
+        self._send_to_client(client, p.FINAL, *frames, copy=copy, track=track)
 
-    def send_reply_partial(self, client, frames):
-        # type: (bytes, List[bytes]) -> None
+    def send_reply_partial(self, client, frames, copy=True, track=False):
+        # type: (bytes, List[bytes], bool, bool) -> None
         """Send the given set of frames as a partial reply to client
 
         PARTIAL reply means the client will expect zero or more additional PARTIAL reply messages following
@@ -110,18 +114,18 @@ class Worker(object):
         reply are ready to be sent, and the client is capable of processing them while the worker is still
         at work on the rest of the reply.
         """
-        self._send_to_client(client, p.PARTIAL, *frames)
+        self._send_to_client(client, p.PARTIAL, *frames, copy=copy, track=track)
 
-    def send_reply_from_iterable(self, client, frames_iter, final=None):
-        # type: (bytes, Iterable[List[bytes]], List[bytes]) -> None
+    def send_reply_from_iterable(self, client, frames_iter, final=None, copy=True, track=False):
+        # type: (bytes, Iterable[List[bytes]], List[bytes], bool, bool) -> None
         """Send multiple partial replies from an iterator as PARTIAL replies to client.
 
         If `final` is provided, it will be sent as the FINAL reply after all PARTIAL replies are sent.
         """
         for part in frames_iter:
-            self.send_reply_partial(client, part)
+            self.send_reply_partial(client, part, copy=copy, track=track)
         if final:
-            self.send_reply_final(client, final)
+            self.send_reply_final(client, final, copy=copy, track=track)
 
     def close(self):
         if not self.is_connected():
@@ -193,12 +197,12 @@ class Worker(object):
             self._log.debug("Sending HEARTBEAT to broker")
             self._send(p.HEARTBEAT)
 
-    def _send_to_client(self, client, message_type, *frames):
-        self._send(message_type, client, b'', *frames)
+    def _send_to_client(self, client, message_type, *frames, copy=True, track=False):
+        self._send(message_type, client, b'', *frames, copy=copy, track=track)
 
-    def _send(self, message_type, *args):
-        # type: (bytes, *bytes) -> None
-        self._socket.send_multipart((b'', p.WORKER_HEADER, message_type) + args)
+    def _send(self, message_type, *args, copy=True, track=False):
+        # type: (bytes, *bytes, bool, bool) -> None
+        self._socket.send_multipart((b'', p.WORKER_HEADER, message_type) + args, copy=copy, track=track)
         self._last_sent_message = time.time()
 
     def _get_poll_timeout(self):
